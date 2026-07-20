@@ -57,6 +57,30 @@ class CinderConfiguration(ParentConfig):
     cluster: str | None = None
 
 
+class IdentityConfiguration(ParentConfig):
+    """Keystone credentials for cinder to authenticate to other services."""
+
+    auth_url: str | None = None
+    username: str | None = None
+    password: str | None = None
+    project_name: str | None = None
+    user_domain_name: str | None = None
+    project_domain_name: str | None = None
+
+    @model_validator(mode="after")
+    def _all_or_none(self) -> "IdentityConfiguration":
+        """Require the credentials to be set together."""
+        values = self.model_dump()
+        set_keys = [k for k, v in values.items() if v is not None]
+        if set_keys and len(set_keys) != len(values):
+            missing = sorted(set(values) - set(set_keys))
+            raise ValueError(
+                "identity credentials must be set together; missing: "
+                + ", ".join(missing)
+            )
+        return self
+
+
 class Settings(ParentConfig):
     """General settings for the snap."""
 
@@ -90,6 +114,7 @@ class BaseConfiguration(ParentConfig):
 
     settings: Settings = Settings()
     ca: CAConfiguration = CAConfiguration()
+    identity: IdentityConfiguration = IdentityConfiguration()
     database: DatabaseConfiguration
     rabbitmq: RabbitMQConfiguration
     cinder: CinderConfiguration
@@ -355,6 +380,27 @@ class DellxtremioConfiguration(BaseBackendConfiguration):
     enable_unsupported_driver: typing.Literal[True]
 
 
+class DellunityConfiguration(BaseBackendConfiguration):
+    """All options recognised by the **Dell Unity** Cinder driver.
+
+    This configuration supports iSCSI and Fibre Channel protocols.
+    """
+
+    model_config = pydantic.ConfigDict(
+        extra="allow",  # Allow driver-specific fields not listed here
+        alias_generator=pydantic.AliasGenerator(
+            validation_alias=to_kebab,
+            serialization_alias=pydantic.alias_generators.to_snake,
+        ),
+    )
+
+    # Core required fields
+    san_ip: pydantic.IPvAnyAddress  # Dell Unity management IP/FQDN
+    san_login: str  # Dell Unity management username
+    san_password: str  # Dell Unity management password
+    protocol: str = Field(default="iscsi", pattern="^(iscsi|fc)$")
+
+
 class FujitsueternusdxConfiguration(BaseBackendConfiguration):
     """All options recognised by the **FJDX FC** Cinder driver."""
 
@@ -384,6 +430,28 @@ class HpexpConfiguration(BaseBackendConfiguration):
 
     # Core required fields
     protocol: str = Field(default="fc", pattern="^(fc|iscsi)$")
+
+
+class HuaweidoradoConfiguration(BaseBackendConfiguration):
+    """All options recognised by the **Huawei OceanStor Dorado** Cinder driver.
+
+    This configuration supports FC, iSCSI, and NVMe protocols.
+    """
+
+    model_config = pydantic.ConfigDict(
+        extra="allow",  # Allow driver-specific fields not listed here
+        alias_generator=pydantic.AliasGenerator(
+            validation_alias=to_kebab,
+            serialization_alias=pydantic.alias_generators.to_snake,
+        ),
+    )
+
+    # Core required fields
+    san_address: str  # Management IP(s) of the Huawei storage array (comma-separated)
+    san_user: str  # Huawei storage management username
+    san_password: str  # Huawei storage management password
+    storage_pool: str  # Storage pool name(s) on the array
+    protocol: str = Field(default="fc", pattern="^(fc|iscsi|nvme)$")
 
 
 class IbmflashsystemcommonConfiguration(BaseBackendConfiguration):
@@ -847,7 +915,9 @@ class Configuration(BaseConfiguration):
     dellsc: dict[str, DellSCConfiguration] = {}
     dellpowerflex: dict[str, DellpowerflexConfiguration] = {}
     dellpowerstore: dict[str, DellpowerstoreConfiguration] = {}
+    dellunity: dict[str, DellunityConfiguration] = {}
     hpethreepar: dict[str, HpethreeparConfiguration] = {}
+    huaweidorado: dict[str, HuaweidoradoConfiguration] = {}
     infinidat: dict[str, InfinidatConfiguration] = {}
 
     @pydantic.model_validator(mode="after")
@@ -864,7 +934,9 @@ class Configuration(BaseConfiguration):
             ("dellsc", self.dellsc),
             ("dellpowerflex", self.dellpowerflex),
             ("dellpowerstore", self.dellpowerstore),
+            ("dellunity", self.dellunity),
             ("hpethreepar", self.hpethreepar),
+            ("huaweidorado", self.huaweidorado),
             ("infinidat", self.infinidat),
         ]:
             for backend_key, backend in backends.items():

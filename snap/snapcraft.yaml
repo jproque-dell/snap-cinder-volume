@@ -1,14 +1,14 @@
 name: cinder-volume
 base: core26
-build-base: devel
 version: "2026.1"
+adopt-info: snap-version
 summary: cinder-volume in a snap
 description: |
   This snap is a base snap for cinder-volume. It intended to be used
   directly for supported plugins, but can be used a base for other snaps
   that need to include cinder-volume.
 
-grade: devel
+grade: stable
 confinement: strict
 
 assumes:
@@ -37,7 +37,7 @@ apps:
     environment:
       # Standard library components must have priority in module name resolution: https://storyboard.openstack.org/#!/story/2007806
       PYTHONPATH: $SNAP/usr/lib/python3/dist-packages:$SNAP/lib/python3.14:$SNAP/lib/python3.14/site-packages
-      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu/ceph
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/ceph
     command: bin/cinder_volume
     daemon: simple
     plugs:
@@ -55,6 +55,21 @@ apps:
       - dm-multipath
 
 parts:
+  snap-version:
+    plugin: nil
+    build-packages:
+      - git
+    override-build: |
+      set -eu
+      craftctl default
+      gitref="$(git -C "$CRAFT_PROJECT_DIR" rev-parse --short=8 HEAD)"
+      version="$(craftctl get version)-${gitref}"
+      git -C "$CRAFT_PROJECT_DIR" update-index -q --refresh
+      if ! git -C "$CRAFT_PROJECT_DIR" diff-index --quiet HEAD --; then
+        version="${version}+dirty"
+      fi
+      craftctl set version="${version}"
+
   openstack:
     plugin: nil
     stage-packages:
@@ -95,8 +110,30 @@ parts:
     source: .
     build-packages:
       - git
+      # Toolchain for dependencies built from sdist on architectures without
+      # published wheels (e.g. s390x): bcrypt and cryptography need Rust;
+      # pynacl and logbook need a C compiler.
+      - build-essential
+      - cargo
+      - rustc
+      # cryptography's Rust openssl-sys crate links system OpenSSL via pkg-config.
+      - pkg-config
+      - libssl-dev
     stage-packages:
       - python3-venv
+      # Python headers (Python.h) must live in the staged Python tree, because
+      # uv builds the venv from this part's staged interpreter. Needed for the
+      # above source builds.
+      - libpython3-dev
+    build-environment:
+      # bcrypt 4.3.0 pins an old PyO3 (0.23.5) that refuses to build against
+      # the newer Python 3.14 interpreter. Build against the stable abi3 with
+      # forward compatibility (bcrypt ships abi3 wheels, so this is correct).
+      - PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+      # logbook 1.9.2's optional Rust speedup does not compile against the
+      # pyo3 version resolved here; build it pure-Python (only needed on
+      # architectures without wheels, e.g. s390x).
+      - DISABLE_LOGBOOK_CEXT: "1"
     override-build: |
       craftctl default
       cinder-snap-helpers write-hooks
